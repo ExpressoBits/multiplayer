@@ -1,6 +1,7 @@
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Collections;
+using Unity.NetCode;
 
 namespace Asteroids.Server
 {
@@ -9,33 +10,37 @@ namespace Asteroids.Server
     }
 
     [UpdateInGroup(typeof(ServerSimulationSystemGroup))]
-    [UpdateBefore(typeof(NetworkStreamSendSystem))]
-    [AlwaysUpdateSystem]
+    [UpdateBefore(typeof(RpcSystem))]
     public class LoadLevelSystem : JobComponentSystem
     {
         private BeginSimulationEntityCommandBufferSystem m_Barrier;
-        private RpcQueue<RpcLoadLevel> m_RpcQueue;
-        private ComponentGroup m_LevelGroup;
+        private EntityQuery m_LevelGroup;
 
         [ExcludeComponent(typeof(LevelRequestedTag))]
-        struct RequestLoadJob : IJobProcessComponentDataWithEntity<NetworkIdComponent>
+        struct RequestLoadJob : IJobForEachWithEntity<NetworkIdComponent>
         {
             public EntityCommandBuffer commandBuffer;
-            public RpcQueue<RpcLoadLevel> rpcQueue;
-            public BufferFromEntity<OutgoingRpcDataStreamBufferComponent> rpcBuffer;
             [DeallocateOnJobCompletion] [ReadOnly] public NativeArray<LevelComponent> level;
             public void Execute(Entity entity, int index, [ReadOnly] ref NetworkIdComponent netId)
             {
                 commandBuffer.AddComponent(entity, new LevelRequestedTag());
-                rpcQueue.Schedule(rpcBuffer[entity], new RpcLoadLevel {width = level[0].width, height = level[0].height});
+                var req = commandBuffer.CreateEntity();
+                commandBuffer.AddComponent(req, new LevelLoadRequest
+                {
+                    width = level[0].width,
+                    height = level[0].height,
+                    playerForce = level[0].playerForce,
+                    bulletVelocity = level[0].bulletVelocity
+                });
+                commandBuffer.AddComponent(req, new SendRpcCommandRequestComponent {TargetConnection = entity});
             }
         }
 
-        protected override void OnCreateManager()
+        protected override void OnCreate()
         {
-            m_Barrier = World.GetOrCreateManager<BeginSimulationEntityCommandBufferSystem>();
-            m_RpcQueue = World.GetOrCreateManager<RpcSystem>().GetRpcQueue<RpcLoadLevel>();
-            m_LevelGroup = GetComponentGroup(ComponentType.ReadWrite<LevelComponent>());
+            m_Barrier = World.GetOrCreateSystem<BeginSimulationEntityCommandBufferSystem>();
+            m_LevelGroup = GetEntityQuery(ComponentType.ReadWrite<LevelComponent>());
+            RequireSingletonForUpdate<ServerSettings>();
         }
 
         protected override JobHandle OnUpdate(JobHandle inputDeps)
@@ -44,16 +49,20 @@ namespace Asteroids.Server
             {
                 var settings = GetSingleton<ServerSettings>();
                 var level = EntityManager.CreateEntity();
-                EntityManager.AddComponentData(level, new LevelComponent {width = settings.levelWidth, height = settings.levelHeight});
+                EntityManager.AddComponentData(level, new LevelComponent
+                {
+                    width = settings.levelWidth,
+                    height = settings.levelHeight,
+                    playerForce = settings.playerForce,
+                    bulletVelocity = settings.bulletVelocity
+                });
                 return inputDeps;
             }
             JobHandle levelDep;
             var job = new RequestLoadJob
             {
                 commandBuffer = m_Barrier.CreateCommandBuffer(),
-                rpcQueue = m_RpcQueue,
-                rpcBuffer = GetBufferFromEntity<OutgoingRpcDataStreamBufferComponent>(),
-                level = m_LevelGroup.ToComponentDataArray<LevelComponent>(Allocator.TempJob, out levelDep)
+                level = m_LevelGroup.ToComponentDataArrayAsync<LevelComponent>(Allocator.TempJob, out levelDep)
             };
             var handle = job.ScheduleSingle(this, JobHandle.CombineDependencies(inputDeps, levelDep));
             m_Barrier.AddJobHandleForProducer(handle);

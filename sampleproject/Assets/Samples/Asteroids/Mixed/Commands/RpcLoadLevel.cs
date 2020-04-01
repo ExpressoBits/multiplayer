@@ -1,48 +1,76 @@
-using Unity.Entities;
+using Unity.Burst;
 using Unity.Networking.Transport;
+using Unity.NetCode;
 
-public struct LevelLoadRequest : IComponentData
+[BurstCompile]
+public struct LevelLoadRequest : IRpcCommand
 {
     public int width;
     public int height;
-    public Entity connection;
+    public float playerForce;
+    public float bulletVelocity;
+
+    public void Serialize(ref DataStreamWriter writer)
+    {
+        writer.WriteInt(width);
+        writer.WriteInt(height);
+        writer.WriteFloat(playerForce);
+        writer.WriteFloat(bulletVelocity);
+    }
+
+    public void Deserialize(ref DataStreamReader reader)
+    {
+        width = reader.ReadInt();
+        height = reader.ReadInt();
+        playerForce = reader.ReadFloat();
+        bulletVelocity = reader.ReadFloat();
+    }
+    [BurstCompile]
+    private static void InvokeExecute(ref RpcExecutor.Parameters parameters)
+    {
+        RpcExecutor.ExecuteCreateRequestComponent<LevelLoadRequest>(ref parameters);
+    }
+
+    static PortableFunctionPointer<RpcExecutor.ExecuteDelegate> InvokeExecuteFunctionPointer =
+        new PortableFunctionPointer<RpcExecutor.ExecuteDelegate>(InvokeExecute);
+    public PortableFunctionPointer<RpcExecutor.ExecuteDelegate> CompileExecute()
+    {
+        return InvokeExecuteFunctionPointer;
+    }
 }
-public struct RpcLoadLevel : RpcCommand
+class LevelLoadRequestRpcCommandRequestSystem : RpcCommandRequestSystem<LevelLoadRequest>
 {
-    public int width;
-    public int height;
-
-    public void Execute(Entity connection, EntityCommandBuffer.Concurrent commandBuffer, int jobIndex)
-    {
-        var req = commandBuffer.CreateEntity(jobIndex);
-        commandBuffer.AddComponent(jobIndex, req, new LevelLoadRequest {width = width, height = height, connection = connection});
-    }
-
-    public void Serialize(DataStreamWriter writer)
-    {
-        writer.Write(width);
-        writer.Write(height);
-    }
-
-    public void Deserialize(DataStreamReader reader, ref DataStreamReader.Context ctx)
-    {
-        width = reader.ReadInt(ref ctx);
-        height = reader.ReadInt(ref ctx);
-    }
 }
 
-public struct RpcLevelLoaded : RpcCommand
+[BurstCompile]
+public struct RpcLevelLoaded : IRpcCommand
 {
-    public void Execute(Entity connection, EntityCommandBuffer.Concurrent commandBuffer, int jobIndex)
-    {
-        commandBuffer.AddComponent(jobIndex, connection, new PlayerStateComponentData());
-    }
-
-    public void Serialize(DataStreamWriter writer)
+    public void Serialize(ref DataStreamWriter writer)
     {
     }
 
-    public void Deserialize(DataStreamReader reader, ref DataStreamReader.Context ctx)
+    public void Deserialize(ref DataStreamReader reader)
     {
     }
+
+    [BurstCompile]
+    private static void InvokeExecute(ref RpcExecutor.Parameters parameters)
+    {
+        var rpcData = default(RpcLevelLoaded);
+        rpcData.Deserialize(ref parameters.Reader);
+
+        parameters.CommandBuffer.AddComponent(parameters.JobIndex, parameters.Connection, new PlayerStateComponentData());
+        parameters.CommandBuffer.AddComponent(parameters.JobIndex, parameters.Connection, default(NetworkStreamInGame));
+        parameters.CommandBuffer.AddComponent(parameters.JobIndex, parameters.Connection, default(GhostConnectionPosition));
+    }
+
+    static PortableFunctionPointer<RpcExecutor.ExecuteDelegate> InvokeExecuteFunctionPointer =
+        new PortableFunctionPointer<RpcExecutor.ExecuteDelegate>(InvokeExecute);
+    public PortableFunctionPointer<RpcExecutor.ExecuteDelegate> CompileExecute()
+    {
+        return InvokeExecuteFunctionPointer;
+    }
+}
+class LevelLoadedRpcCommandRequestSystem : RpcCommandRequestSystem<RpcLevelLoaded>
+{
 }

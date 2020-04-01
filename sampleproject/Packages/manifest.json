@@ -1,8 +1,18 @@
 {
   "dependencies": {
-    "com.unity.entities": "0.0.12-preview.26",
-    "com.unity.transport": "file:../../com.unity.transport",
+    "com.unity.2d.sprite": "1.0.0",
+    "com.unity.2d.tilemap": "1.0.0",
+    "com.unity.entities": "0.6.0-preview.24",
+    "com.unity.ide.rider": "1.1.4",
+    "com.unity.ide.vscode": "1.1.4",
+    "com.unity.netcode": "0.1.0-preview.6",
+    "com.unity.physics": "0.2.5-preview.1",
+    "com.unity.rendering.hybrid": "0.3.4-preview.24",
+    "com.unity.test-framework": "1.1.11",
+    "com.unity.transport": "0.3.0-preview.6",
+    "com.unity.ugui": "1.0.0",
     "com.unity.modules.ai": "1.0.0",
+    "com.unity.modules.androidjni": "1.0.0",
     "com.unity.modules.animation": "1.0.0",
     "com.unity.modules.assetbundle": "1.0.0",
     "com.unity.modules.audio": "1.0.0",
@@ -34,6 +44,7 @@
     "com.unity.modules.xr": "1.0.0"
   },
   "testables": [
-    "com.unity.transport"
+    "com.unity.transport",
+    "com.unity.netcode"
   ]
 }

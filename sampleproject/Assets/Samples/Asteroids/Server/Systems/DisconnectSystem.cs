@@ -1,5 +1,6 @@
 using Unity.Entities;
 using Unity.Jobs;
+using Unity.NetCode;
 
 namespace Asteroids.Server
 {
@@ -9,22 +10,22 @@ namespace Asteroids.Server
     {
         private BeginSimulationEntityCommandBufferSystem m_Barrier;
         [RequireComponentTag(typeof(NetworkStreamDisconnected))]
-        struct DisconnectJob : IJobProcessComponentData<PlayerStateComponentData>
+        struct DisconnectJob : IJobForEach<CommandTargetComponent>
         {
             public EntityCommandBuffer commandBuffer;
-            public void Execute(ref PlayerStateComponentData state)
+            public void Execute(ref CommandTargetComponent state)
             {
-                if (state.PlayerShip != Entity.Null)
+                if (state.targetEntity != Entity.Null)
                 {
-                    commandBuffer.DestroyEntity(state.PlayerShip);
-                    state.PlayerShip = Entity.Null;
+                    commandBuffer.DestroyEntity(state.targetEntity);
+                    state.targetEntity = Entity.Null;
                 }
             }
         }
 
-        protected override void OnCreateManager()
+        protected override void OnCreate()
         {
-            m_Barrier = World.GetOrCreateManager<BeginSimulationEntityCommandBufferSystem>();
+            m_Barrier = World.GetOrCreateSystem<BeginSimulationEntityCommandBufferSystem>();
         }
 
         protected override JobHandle OnUpdate(JobHandle inputDeps)

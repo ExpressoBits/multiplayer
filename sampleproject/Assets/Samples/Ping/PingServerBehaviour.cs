@@ -6,7 +6,7 @@ using Unity.Jobs;
 
 public class PingServerBehaviour : MonoBehaviour
 {
-    public UdpNetworkDriver m_ServerDriver;
+    public NetworkDriver m_ServerDriver;
     private NativeList<NetworkConnection> m_connections;
 
     private JobHandle m_updateHandle;
@@ -14,11 +14,8 @@ public class PingServerBehaviour : MonoBehaviour
     void Start()
     {
         ushort serverPort = 9000;
-        ushort newPort = 0;
-        if (CommandLine.TryGetCommandLineArgValue("-port", out newPort))
-            serverPort = newPort;
         // Create the server driver, bind it to a port and start listening for incoming connections
-        m_ServerDriver = new UdpNetworkDriver(new INetworkParameter[0]);
+        m_ServerDriver = NetworkDriver.Create();
         var addr = NetworkEndPoint.AnyIpv4;
         addr.Port = serverPort;
         if (m_ServerDriver.Bind(addr) != 0)
@@ -27,8 +24,6 @@ public class PingServerBehaviour : MonoBehaviour
             m_ServerDriver.Listen();
 
         m_connections = new NativeList<NetworkConnection>(16, Allocator.Persistent);
-
-        SQPDriver.ServerPort = serverPort;
     }
 
     void OnDestroy()
@@ -42,7 +37,7 @@ public class PingServerBehaviour : MonoBehaviour
     [BurstCompile]
     struct DriverUpdateJob : IJob
     {
-        public UdpNetworkDriver driver;
+        public NetworkDriver driver;
         public NativeList<NetworkConnection> connections;
 
         public void Execute()
@@ -70,7 +65,7 @@ public class PingServerBehaviour : MonoBehaviour
         }
     }
 
-    static NetworkConnection ProcessSingleConnection(UdpNetworkDriver.Concurrent driver, NetworkConnection connection)
+    static NetworkConnection ProcessSingleConnection(NetworkDriver.Concurrent driver, NetworkConnection connection)
     {
         DataStreamReader strm;
         NetworkEvent.Type cmd;
@@ -80,15 +75,12 @@ public class PingServerBehaviour : MonoBehaviour
             if (cmd == NetworkEvent.Type.Data)
             {
                 // For ping requests we reply with a pong message
-                // A DataStreamReader.Context is required to keep track of current read position since
-                // DataStreamReader is immutable
-                var readerCtx = default(DataStreamReader.Context);
-                int id = strm.ReadInt(ref readerCtx);
+                int id = strm.ReadInt();
                 // Create a temporary DataStreamWriter to keep our serialized pong message
-                var pongData = new DataStreamWriter(4, Allocator.Temp);
-                pongData.Write(id);
+                var pongData = driver.BeginSend(connection);
+                pongData.WriteInt(id);
                 // Send the pong message with the same id as the ping
-                driver.Send(NetworkPipeline.Null, connection, pongData);
+                driver.EndSend(pongData);
             }
             else if (cmd == NetworkEvent.Type.Disconnect)
             {
@@ -104,7 +96,7 @@ public class PingServerBehaviour : MonoBehaviour
     [BurstCompile]
     struct PongJob : IJob
     {
-        public UdpCNetworkDriver.Concurrent driver;
+        public NetworkDriver.Concurrent driver;
         public NativeList<NetworkConnection> connections;
 
         public void Execute()
@@ -115,9 +107,9 @@ public class PingServerBehaviour : MonoBehaviour
     }
 #else
     [BurstCompile]
-    struct PongJob : IJobParallelFor
+    struct PongJob : IJobParallelForDefer
     {
-        public UdpNetworkDriver.Concurrent driver;
+        public NetworkDriver.Concurrent driver;
         public NativeArray<NetworkConnection> connections;
 
         public void Execute(int i)
@@ -139,9 +131,6 @@ public class PingServerBehaviour : MonoBehaviour
         // Wait for the previous frames ping to complete before starting a new one, the Complete in LateUpdate is not
         // enough since we can get multiple FixedUpdate per frame on slow clients
         m_updateHandle.Complete();
-        // If there is at least one client connected update the activity so the server is not shutdown
-        if (m_connections.Length > 0)
-            DedicatedServerConfig.UpdateLastActivity();
         var updateJob = new DriverUpdateJob {driver = m_ServerDriver, connections = m_connections};
         var pongJob = new PongJob
         {

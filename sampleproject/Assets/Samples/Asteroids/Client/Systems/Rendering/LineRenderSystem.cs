@@ -6,7 +6,7 @@ using Unity.Entities;
 using Unity.Mathematics;
 using UnityEngine.Rendering;
 using Unity.Jobs;
-
+using Unity.NetCode;
 
 namespace Asteroids.Client
 {
@@ -19,7 +19,7 @@ namespace Asteroids.Client
     [UpdateInGroup(typeof(ClientPresentationSystemGroup))]
     public class LineRenderSystem : JobComponentSystem
     {
-        public NativeQueue<Line>.Concurrent LineQueue => m_ConcurrentLineQueue;
+        public NativeQueue<Line>.ParallelWriter LineQueue => m_ConcurrentLineQueue;
         public struct Line
         {
             public Line(float2 start, float2 end, float4 color, float width)
@@ -36,12 +36,12 @@ namespace Asteroids.Client
             public float width;
         }
 
-        private ComponentGroup m_LevelGroup;
+        private EntityQuery m_LevelGroup;
         private Entity m_SingletonEntity;
 
         private NativeList<Line> m_LineList;
         private NativeQueue<Line> m_LineQueue;
-        private NativeQueue<Line>.Concurrent m_ConcurrentLineQueue;
+        private NativeQueue<Line>.ParallelWriter m_ConcurrentLineQueue;
         private NativeArray<float2> m_RenderOffset;
 
         // Rendering resources
@@ -49,10 +49,10 @@ namespace Asteroids.Client
         ComputeBuffer m_ComputeBuffer;
         CommandBuffer m_CommandBuffer;
 
-        const int MaxLines = 1024 * 1024;
+        const int MaxLines = 10 * 1024;
 
         [BurstCompile]
-        struct CopyToListJob : IJobProcessComponentData<LineRendererComponentData>
+        struct CopyToListJob : IJobForEach<LineRendererComponentData>
         {
             public NativeList<Line> list;
             public NativeQueue<Line> queue;
@@ -60,6 +60,7 @@ namespace Asteroids.Client
 
             public NativeArray<float2> renderOffset;
             public float deltaTime;
+            public float2 renderSize;
 
             public void Execute(ref LineRendererComponentData lineData)
             {
@@ -72,10 +73,6 @@ namespace Asteroids.Client
                     list.Add(new Line(new float2(level[0].width, 0), new float2(level[0].width, level[0].height),
                         new float4(1, 0, 0, 1), 5));
                 }
-
-                Line line;
-                while (queue.TryDequeue(out line))
-                    list.Add(line);
 
                 var offset = renderOffset[0];
                 var target = lineData.targetOffset;
@@ -96,6 +93,17 @@ namespace Asteroids.Client
                     }
 
                     renderOffset[0] = offset;
+                }
+
+                Line line;
+                while (queue.TryDequeue(out line))
+                {
+                    if ((line.start.x < offset.x-line.width && line.end.x < offset.x-line.width) ||
+                        (line.start.x > offset.x+renderSize.x+line.width && line.end.x > offset.x+renderSize.x+line.width) ||
+                        (line.start.y < offset.y-line.width && line.end.y < offset.y-line.width) ||
+                        (line.start.y > offset.y+renderSize.y+line.width && line.end.y > offset.y+renderSize.y+line.width))
+                        continue;
+                    list.Add(line);
                 }
             }
         }
@@ -131,13 +139,14 @@ namespace Asteroids.Client
             copyToListJob.list = m_LineList;
             copyToListJob.queue = m_LineQueue;
             copyToListJob.renderOffset = m_RenderOffset;
-            copyToListJob.deltaTime = Time.deltaTime;
-            copyToListJob.level = m_LevelGroup.ToComponentDataArray<LevelComponent>(Allocator.TempJob, out levelHandle);
+            copyToListJob.renderSize = new float2(Screen.width, Screen.height);
+            copyToListJob.deltaTime = Time.DeltaTime;
+            copyToListJob.level = m_LevelGroup.ToComponentDataArrayAsync<LevelComponent>(Allocator.TempJob, out levelHandle);
 
             return copyToListJob.ScheduleSingle(this, JobHandle.CombineDependencies(inputDeps, levelHandle));
         }
 
-        protected override void OnCreateManager()
+        protected override void OnCreate()
         {
             var shader = Shader.Find("LineRenderer");
             if (shader == null)
@@ -153,7 +162,7 @@ namespace Asteroids.Client
 
             m_LineList = new NativeList<Line>(MaxLines, Allocator.Persistent);
             m_LineQueue = new NativeQueue<Line>(Allocator.Persistent);
-            m_ConcurrentLineQueue = m_LineQueue.ToConcurrent();
+            m_ConcurrentLineQueue = m_LineQueue.AsParallelWriter();
 
             // Fake singleton entity
             m_SingletonEntity = EntityManager.CreateEntity();
@@ -164,10 +173,10 @@ namespace Asteroids.Client
 
             m_RenderOffset = new NativeArray<float2>(2, Allocator.Persistent);
 
-            m_LevelGroup = GetComponentGroup(ComponentType.ReadWrite<LevelComponent>());
+            m_LevelGroup = GetEntityQuery(ComponentType.ReadWrite<LevelComponent>());
         }
 
-        protected override void OnDestroyManager()
+        protected override void OnDestroy()
         {
             m_RenderOffset.Dispose();
             EntityManager.DestroyEntity(m_SingletonEntity);

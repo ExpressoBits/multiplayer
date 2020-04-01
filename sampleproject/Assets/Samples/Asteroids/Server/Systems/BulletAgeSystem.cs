@@ -1,7 +1,7 @@
 using Unity.Burst;
-using UnityEngine;
 using Unity.Entities;
 using Unity.Jobs;
+using Unity.NetCode;
 
 namespace Asteroids.Server
 {
@@ -9,11 +9,11 @@ namespace Asteroids.Server
     public class BulletAgeSystem : JobComponentSystem
     {
         [BurstCompile]
-        struct BulletJob : IJobProcessComponentDataWithEntity<BulletAgeComponentData>
+        struct BulletJob : IJobForEachWithEntity<BulletAgeComponent>
         {
             public EntityCommandBuffer.Concurrent commandBuffer;
             public float deltaTime;
-            public void Execute(Entity entity, int index, ref BulletAgeComponentData age)
+            public void Execute(Entity entity, int index, ref BulletAgeComponent age)
             {
                 age.age += deltaTime;
                 if (age.age > age.maxAge)
@@ -24,14 +24,14 @@ namespace Asteroids.Server
 
         private BeginSimulationEntityCommandBufferSystem barrier;
 
-        protected override void OnCreateManager()
+        protected override void OnCreate()
         {
-            barrier = World.GetOrCreateManager<BeginSimulationEntityCommandBufferSystem>();
+            barrier = World.GetOrCreateSystem<BeginSimulationEntityCommandBufferSystem>();
         }
 
         protected override JobHandle OnUpdate(JobHandle inputDeps)
         {
-            var bulletJob = new BulletJob {commandBuffer = barrier.CreateCommandBuffer().ToConcurrent(), deltaTime = Time.deltaTime};
+            var bulletJob = new BulletJob {commandBuffer = barrier.CreateCommandBuffer().ToConcurrent(), deltaTime = Time.DeltaTime};
             var handle = bulletJob.Schedule(this, inputDeps);
             barrier.AddJobHandleForProducer(handle);
             return handle;

@@ -2,13 +2,12 @@ using UnityEngine;
 using Unity.Entities;
 using Unity.Jobs;
 using Unity.Collections;
-using Unity.Collections.LowLevel.Unsafe;
-using Unity.Networking.Transport;
-using Unity.Networking.Transport.LowLevel.Unsafe;
+using Unity.NetCode;
 
 namespace Asteroids.Client
 {
     [UpdateInGroup(typeof(PresentationSystemGroup))]
+    [UpdateInWorld(UpdateInWorld.TargetWorld.Default)]
     public class InputSamplerSystem : ComponentSystem
     {
         public static int spacePresses;
@@ -22,6 +21,7 @@ namespace Asteroids.Client
 #if !UNITY_SERVER
     [UpdateAfter(typeof(TickClientSimulationSystem))]
 #endif
+    [UpdateInWorld(UpdateInWorld.TargetWorld.Default)]
     public class InputSamplerResetSystem : ComponentSystem
     {
         protected override void OnUpdate()
@@ -31,66 +31,52 @@ namespace Asteroids.Client
     }
 
     [UpdateInGroup(typeof(ClientSimulationSystemGroup))]
-    [UpdateBefore(typeof(NetworkStreamSendSystem))]
-    // FIXME: dependency just for acking
-    [UpdateAfter(typeof(GhostReceiveSystemGroup))]
+    [UpdateBefore(typeof(AsteroidsCommandSendSystem))]
+    // Try to sample input as late as possible
+    [UpdateAfter(typeof(GhostSimulationSystemGroup))]
     public class InputSystem : JobComponentSystem
     {
-        private RpcQueue<RpcSpawn> m_RpcQueue;
-        protected override void OnCreateManager()
+        private BeginSimulationEntityCommandBufferSystem m_Barrier;
+        private GhostPredictionSystemGroup m_GhostPredict;
+        private int frameCount;
+
+        protected override void OnCreate()
         {
-            m_RpcQueue = World.GetOrCreateManager<RpcSystem>().GetRpcQueue<RpcSpawn>();
+            m_GhostPredict = World.GetOrCreateSystem<GhostPredictionSystemGroup>();
+            m_Barrier = World.GetOrCreateSystem<BeginSimulationEntityCommandBufferSystem>();
         }
 
         [ExcludeComponent(typeof(NetworkStreamDisconnected))]
-        struct PlayerInputJob : IJobProcessComponentDataWithEntity<PlayerStateComponentData>
+        [RequireComponentTag(typeof(OutgoingRpcDataStreamBufferComponent))]
+        struct PlayerInputJob : IJobForEachWithEntity<CommandTargetComponent>
         {
             public byte left;
             public byte right;
             public byte thrust;
             public byte shoot;
-            public ComponentDataFromEntity<ShipStateComponentData> shipState;
-            public RpcQueue<RpcSpawn> rpcQueue;
-            public BufferFromEntity<OutgoingRpcDataStreamBufferComponent> rpcBuffer;
-            public BufferFromEntity<OutgoingCommandDataStreamBufferComponent> cmdBuffer;
-            public ComponentDataFromEntity<NetworkSnapshotAck> ackSnapshot;
-            public uint localTime;
+            public EntityCommandBuffer.Concurrent commandBuffer;
+            public BufferFromEntity<ShipCommandData> inputFromEntity;
             public uint inputTargetTick;
-            public unsafe void Execute(Entity entity, int index, [ReadOnly] ref PlayerStateComponentData state)
+            public void Execute(Entity entity, int index, [ReadOnly] ref CommandTargetComponent state)
             {
-                // FIXME: ack and sending command stream should be handled by a different system
-                DataStreamWriter writer = new DataStreamWriter(128, Allocator.Temp);
-                var buffer = cmdBuffer[entity];
-                var ack = ackSnapshot[entity];
-                writer.Write((byte)NetworkStreamProtocol.Command);
-                writer.Write(ack.LastReceivedSnapshotByLocal);
-                writer.Write(ack.ReceivedSnapshotByLocalMask);
-                writer.Write(localTime);
-                writer.Write(ack.LastReceivedRemoteTime - (localTime - ack.LastReceiveTimestamp));
-                if (state.PlayerShip == Entity.Null)
+                if (state.targetEntity == Entity.Null)
                 {
                     if (shoot != 0)
                     {
-                        rpcQueue.Schedule(rpcBuffer[entity], new RpcSpawn());
+                        var req = commandBuffer.CreateEntity(index);
+                        commandBuffer.AddComponent<PlayerSpawnRequest>(index, req);
+                        commandBuffer.AddComponent(index, req, new SendRpcCommandRequestComponent {TargetConnection = entity});
                     }
                 }
                 else
                 {
-                    writer.Write(inputTargetTick);
-                    writer.Write(left);
-                    writer.Write(right);
-                    writer.Write(thrust);
-                    writer.Write(shoot);
-
                     // If ship, store commands in network command buffer
-                    /*input = new PlayerInputComponentData(left, right, thrust, shoot);*/
-                    // FIXME: when destroying the ship is in a command buffer this no longer works
-                    if (shipState.Exists(state.PlayerShip)) // There might be a pending set to null
-                        shipState[state.PlayerShip] = new ShipStateComponentData(thrust, true);
+                    if (inputFromEntity.Exists(state.targetEntity))
+                    {
+                        var input = inputFromEntity[state.targetEntity];
+                        input.AddCommandData(new ShipCommandData{tick = inputTargetTick, left = left, right = right, thrust = thrust, shoot = shoot});
+                    }
                 }
-                buffer.ResizeUninitialized(writer.Length);
-                byte* ptr = (byte*) buffer.GetUnsafePtr();
-                UnsafeUtility.MemCpy(buffer.GetUnsafePtr(), writer.GetUnsafeReadOnlyPtr(), writer.Length);
             }
         }
 
@@ -101,15 +87,11 @@ namespace Asteroids.Client
             playerJob.right = 0;
             playerJob.thrust = 0;
             playerJob.shoot = 0;
-            playerJob.shipState = GetComponentDataFromEntity<ShipStateComponentData>();
-            playerJob.rpcQueue = m_RpcQueue;
-            playerJob.rpcBuffer = GetBufferFromEntity<OutgoingRpcDataStreamBufferComponent>();
-            playerJob.cmdBuffer = GetBufferFromEntity<OutgoingCommandDataStreamBufferComponent>();
-            playerJob.ackSnapshot = GetComponentDataFromEntity<NetworkSnapshotAck>();
-            playerJob.localTime = NetworkTimeSystem.TimestampMS;
-            playerJob.inputTargetTick = NetworkTimeSystem.predictTargetTick;
+            playerJob.commandBuffer = m_Barrier.CreateCommandBuffer().ToConcurrent();
+            playerJob.inputFromEntity = GetBufferFromEntity<ShipCommandData>();
+            playerJob.inputTargetTick = m_GhostPredict.PredictingTick;
 
-            if (World.GetExistingManager<ClientPresentationSystemGroup>().Enabled)
+            if (World.GetExistingSystem<ClientPresentationSystemGroup>().Enabled)
             {
                 if (Input.GetKey("left"))
                     playerJob.left = 1;
@@ -117,23 +99,29 @@ namespace Asteroids.Client
                     playerJob.right = 1;
                 if (Input.GetKey("up"))
                     playerJob.thrust = 1;
-                if (InputSamplerSystem.spacePresses > 0)
-                    //if (Input.GetKey("space"))
+                //if (InputSamplerSystem.spacePresses > 0)
+                if (Input.GetKey("space"))
                     playerJob.shoot = 1;
             }
             else
             {
                 // Spawn and generate some random inputs
-                var state = (int) Time.fixedTime % 3;
+                var state = (int) Time.ElapsedTime % 3;
                 if (state == 0)
                     playerJob.left = 1;
                 else
                     playerJob.thrust = 1;
-                if (Time.frameCount % 100 == 0)
+                ++frameCount;
+                if (frameCount % 100 == 0)
+                {
                     playerJob.shoot = 1;
+                    frameCount = 0;
+                }
             }
 
-            return playerJob.ScheduleSingle(this, inputDeps);
+            var handle = playerJob.ScheduleSingle(this, inputDeps);
+            m_Barrier.AddJobHandleForProducer(handle);
+            return handle;
         }
     }
 }

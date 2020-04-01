@@ -4,7 +4,7 @@ using Unity.Entities;
 using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Transforms;
-
+using Unity.NetCode;
 
 namespace Asteroids.Client
 {
@@ -13,19 +13,19 @@ namespace Asteroids.Client
     [UpdateInGroup(typeof(ClientPresentationSystemGroup))]
     public class BulletRenderSystem : JobComponentSystem
     {
-        private ComponentGroup lineGroup;
-        private NativeQueue<LineRenderSystem.Line>.Concurrent lineQueue;
-        protected override void OnCreateManager()
+        private EntityQuery lineGroup;
+        private NativeQueue<LineRenderSystem.Line>.ParallelWriter lineQueue;
+        protected override void OnCreate()
         {
-            lineGroup = GetComponentGroup(ComponentType.ReadWrite<LineRendererComponentData>());
-            lineQueue = World.GetOrCreateManager<LineRenderSystem>().LineQueue;
+            lineGroup = GetEntityQuery(ComponentType.ReadWrite<LineRendererComponentData>());
+            lineQueue = World.GetOrCreateSystem<LineRenderSystem>().LineQueue;
         }
 
         [BurstCompile]
-        [RequireComponentTag(typeof(BulletTagComponentData))]
-        struct ChunkRenderJob : IJobProcessComponentData<Translation, Rotation>
+        [RequireComponentTag(typeof(BulletTagComponent))]
+        struct ChunkRenderJob : IJobForEach<Translation, Rotation>
         {
-            public NativeQueue<LineRenderSystem.Line>.Concurrent lines;
+            public NativeQueue<LineRenderSystem.Line>.ParallelWriter lines;
             public float4 bulletColor;
             public float4 trailColor;
             public float3 bulletTop;

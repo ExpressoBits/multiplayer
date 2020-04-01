@@ -18,27 +18,27 @@ public struct PingDriverStateComponent : ISystemStateComponentData
 [AlwaysUpdateSystem]
 public class PingDriverSystem : JobComponentSystem
 {
-    public UdpNetworkDriver ServerDriver { get; private set; }
-    public UdpNetworkDriver ClientDriver { get; private set; }
-    public UdpNetworkDriver.Concurrent ConcurrentServerDriver { get; private set; }
-    public UdpNetworkDriver.Concurrent ConcurrentClientDriver { get; private set; }
+    public NetworkDriver ServerDriver { get; private set; }
+    public NetworkDriver ClientDriver { get; private set; }
+    public NetworkDriver.Concurrent ConcurrentServerDriver { get; private set; }
+    public NetworkDriver.Concurrent ConcurrentClientDriver { get; private set; }
 
     private BeginSimulationEntityCommandBufferSystem m_Barrier;
-    private ComponentGroup m_NewDriverGroup;
-    private ComponentGroup m_DestroyedDriverGroup;
-    private ComponentGroup m_ServerConnectionGroup;
+    private EntityQuery m_NewDriverGroup;
+    private EntityQuery m_DestroyedDriverGroup;
+    private EntityQuery m_ServerConnectionGroup;
 
-    protected override void OnCreateManager()
+    protected override void OnCreate()
     {
-        m_Barrier = World.GetOrCreateManager<BeginSimulationEntityCommandBufferSystem>();
-        m_NewDriverGroup = GetComponentGroup(ComponentType.ReadOnly<PingDriverComponentData>(),
+        m_Barrier = World.GetOrCreateSystem<BeginSimulationEntityCommandBufferSystem>();
+        m_NewDriverGroup = GetEntityQuery(ComponentType.ReadOnly<PingDriverComponentData>(),
             ComponentType.Exclude<PingDriverStateComponent>());
-        m_DestroyedDriverGroup = GetComponentGroup(ComponentType.Exclude<PingDriverComponentData>(),
+        m_DestroyedDriverGroup = GetEntityQuery(ComponentType.Exclude<PingDriverComponentData>(),
             ComponentType.ReadOnly<PingDriverStateComponent>());
-        m_ServerConnectionGroup = GetComponentGroup(ComponentType.ReadWrite<PingServerConnectionComponentData>());
+        m_ServerConnectionGroup = GetEntityQuery(ComponentType.ReadWrite<PingServerConnectionComponentData>());
     }
 
-    protected override void OnDestroyManager()
+    protected override void OnDestroy()
     {
         // Destroy NetworkDrivers if the manager is destroyed with live entities
         if (ServerDriver.IsCreated)
@@ -51,7 +51,7 @@ public class PingDriverSystem : JobComponentSystem
     //[BurstCompile]
     struct DriverAcceptJob : IJob
     {
-        public UdpNetworkDriver driver;
+        public NetworkDriver driver;
         public EntityCommandBuffer commandBuffer;
 
         public void Execute()
@@ -68,7 +68,7 @@ public class PingDriverSystem : JobComponentSystem
         }
     }
     [BurstCompile]
-    struct DriverCleanupJob : IJobProcessComponentDataWithEntity<PingServerConnectionComponentData>
+    struct DriverCleanupJob : IJobForEachWithEntity<PingServerConnectionComponentData>
     {
         public EntityCommandBuffer.Concurrent commandBuffer;
 
@@ -123,7 +123,7 @@ public class PingDriverSystem : JobComponentSystem
                 {
                     if (ServerDriver.IsCreated)
                         throw new InvalidOperationException("Cannot create multiple server drivers");
-                    var drv = new UdpNetworkDriver(new INetworkParameter[0]);
+                    var drv = NetworkDriver.Create();
                     var addr = NetworkEndPoint.AnyIpv4;
                     addr.Port = 9000;
                     if (drv.Bind(addr) != 0)
@@ -137,7 +137,7 @@ public class PingDriverSystem : JobComponentSystem
                 {
                     if (ClientDriver.IsCreated)
                         throw new InvalidOperationException("Cannot create multiple client drivers");
-                    ClientDriver = new UdpNetworkDriver(new INetworkParameter[0]);
+                    ClientDriver = NetworkDriver.Create();
                     ConcurrentClientDriver = ClientDriver.ToConcurrent();
                 }
 

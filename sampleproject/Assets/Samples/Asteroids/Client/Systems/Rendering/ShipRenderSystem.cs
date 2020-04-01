@@ -5,6 +5,7 @@ using Unity.Jobs;
 using Unity.Mathematics;
 using Unity.Transforms;
 using UnityEngine;
+using Unity.NetCode;
 
 namespace Asteroids.Client
 {
@@ -14,7 +15,7 @@ namespace Asteroids.Client
     public class ShipThrustParticleSystem : JobComponentSystem
     {
         [BurstCompile]
-        struct ThrustJob : IJobProcessComponentData<ParticleEmitterComponentData, ShipStateComponentData>
+        struct ThrustJob : IJobForEach<ParticleEmitterComponentData, ShipStateComponentData>
         {
             public void Execute(ref ParticleEmitterComponentData emitter, [ReadOnly] ref ShipStateComponentData state)
             {
@@ -34,33 +35,32 @@ namespace Asteroids.Client
     [UpdateInGroup(typeof(ClientPresentationSystemGroup))]
     public class ShipTrackingSystem : JobComponentSystem
     {
-        private ComponentGroup shipGroup;
-        private ComponentGroup m_LevelGroup;
+        private EntityQuery shipGroup;
+        private EntityQuery m_LevelGroup;
         private NativeArray<int> teleport;
-        protected override void OnCreateManager()
+        protected override void OnCreate()
         {
-            shipGroup = GetComponentGroup(
+            shipGroup = GetEntityQuery(
                 ComponentType.ReadOnly<Translation>(),
                 ComponentType.ReadOnly<Rotation>(),
                 ComponentType.ReadOnly<ShipStateComponentData>(),
                 ComponentType.ReadOnly<ShipTagComponentData>());
             teleport = new NativeArray<int>(1, Allocator.Persistent);
             teleport[0] = 1;
-            m_LevelGroup = GetComponentGroup(ComponentType.ReadWrite<LevelComponent>());
+            m_LevelGroup = GetEntityQuery(ComponentType.ReadWrite<LevelComponent>());
             RequireForUpdate(m_LevelGroup);
         }
 
-        protected override void OnDestroyManager()
+        protected override void OnDestroy()
         {
             teleport.Dispose();
         }
 
         [BurstCompile]
-        struct ChunkTrackJob : IJobProcessComponentData<LineRendererComponentData>
+        struct TrackJob : IJobForEach<LineRendererComponentData>
         {
-            [DeallocateOnJobCompletion] public NativeArray<ArchetypeChunk> shipChunks;
-            [ReadOnly] public ArchetypeChunkComponentType<Translation> positionType;
-            [ReadOnly] public ArchetypeChunkComponentType<ShipStateComponentData> stateType;
+            [ReadOnly] public ComponentDataFromEntity<Translation> shipPosition;
+            public Entity localPlayerShip;
 
             public int screenWidth;
             public int screenHeight;
@@ -73,30 +73,23 @@ namespace Asteroids.Client
                 int mapWidth = level[0].width;
                 int mapHeight = level[0].height;
                 int nextTeleport = 1;
-                for (int i = 0; i < shipChunks.Length; ++i)
+
+                if (shipPosition.Exists(localPlayerShip))
                 {
-                    var position = shipChunks[i].GetNativeArray(positionType);
-                    var state = shipChunks[i].GetNativeArray(stateType);
-                    for (int ship = 0; ship < position.Length; ++ship)
-                    {
-                        if (state[ship].IsLocalPlayer != 0)
-                        {
-                            float3 pos = position[ship].Value;
-                            pos.x -= screenWidth / 2;
-                            pos.y -= screenHeight / 2;
-                            if (pos.x + screenWidth > mapWidth)
-                                pos.x = mapWidth - screenWidth;
-                            if (pos.y + screenHeight > mapHeight)
-                                pos.y = mapHeight - screenHeight;
-                            if (pos.x < 0)
-                                pos.x = 0;
-                            if (pos.y < 0)
-                                pos.y = 0;
-                            target.targetOffset = pos.xy;
-                            target.teleport = teleport[0];
-                            nextTeleport = 0;
-                        }
-                    }
+                    float3 pos = shipPosition[localPlayerShip].Value;
+                    pos.x -= screenWidth / 2;
+                    pos.y -= screenHeight / 2;
+                    if (pos.x + screenWidth > mapWidth)
+                        pos.x = mapWidth - screenWidth;
+                    if (pos.y + screenHeight > mapHeight)
+                        pos.y = mapHeight - screenHeight;
+                    if (pos.x < 0)
+                        pos.x = 0;
+                    if (pos.y < 0)
+                        pos.y = 0;
+                    target.targetOffset = pos.xy;
+                    target.teleport = teleport[0];
+                    nextTeleport = 0;
                 }
                 teleport[0] = nextTeleport;
             }
@@ -105,16 +98,15 @@ namespace Asteroids.Client
         {
             if (shipGroup.IsEmptyIgnoreFilter)
                 return inputDeps;
-            var trackJob = new ChunkTrackJob();
-            JobHandle gatherJob, levelHandle;
-            trackJob.shipChunks = shipGroup.CreateArchetypeChunkArray(Allocator.TempJob, out gatherJob);
-            trackJob.positionType = GetArchetypeChunkComponentType<Translation>(true);
-            trackJob.stateType = GetArchetypeChunkComponentType<ShipStateComponentData>(true);
+            var trackJob = new TrackJob();
+            JobHandle levelHandle;
+            trackJob.localPlayerShip = GetSingleton<CommandTargetComponent>().targetEntity;
+            trackJob.shipPosition = GetComponentDataFromEntity<Translation>(true);
             trackJob.screenWidth = Screen.width;
             trackJob.screenHeight = Screen.height;
-            trackJob.level = m_LevelGroup.ToComponentDataArray<LevelComponent>(Allocator.TempJob, out levelHandle);
+            trackJob.level = m_LevelGroup.ToComponentDataArrayAsync<LevelComponent>(Allocator.TempJob, out levelHandle);
             trackJob.teleport = teleport;
-            return trackJob.ScheduleSingle(this, JobHandle.CombineDependencies(inputDeps, gatherJob, levelHandle));
+            return trackJob.ScheduleSingle(this, JobHandle.CombineDependencies(inputDeps, levelHandle));
         }
     }
 
@@ -123,19 +115,19 @@ namespace Asteroids.Client
     [UpdateInGroup(typeof(ClientPresentationSystemGroup))]
     public class ShipRenderSystem : JobComponentSystem
     {
-        private ComponentGroup lineGroup;
-        private NativeQueue<LineRenderSystem.Line>.Concurrent lineQueue;
-        protected override void OnCreateManager()
+        private EntityQuery lineGroup;
+        private NativeQueue<LineRenderSystem.Line>.ParallelWriter lineQueue;
+        protected override void OnCreate()
         {
-            lineGroup = GetComponentGroup(ComponentType.ReadWrite<LineRendererComponentData>());
-            lineQueue = World.GetOrCreateManager<LineRenderSystem>().LineQueue;
+            lineGroup = GetEntityQuery(ComponentType.ReadWrite<LineRendererComponentData>());
+            lineQueue = World.GetOrCreateSystem<LineRenderSystem>().LineQueue;
         }
 
         [BurstCompile]
         [RequireComponentTag(typeof(ShipTagComponentData))]
-        struct ChunkRenderJob : IJobProcessComponentData<Translation, Rotation>
+        struct ChunkRenderJob : IJobForEach<Translation, Rotation>
         {
-            public NativeQueue<LineRenderSystem.Line>.Concurrent lines;
+            public NativeQueue<LineRenderSystem.Line>.ParallelWriter lines;
             public float4 shipColor;
             public float3 shipTop;
             public float3 shipBL;

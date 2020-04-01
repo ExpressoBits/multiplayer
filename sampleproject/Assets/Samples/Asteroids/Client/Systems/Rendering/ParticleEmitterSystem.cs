@@ -6,6 +6,7 @@ using Unity.Jobs;
 using Unity.Burst;
 using Unity.Transforms;
 using Random = UnityEngine.Random;
+using Unity.NetCode;
 
 namespace Asteroids.Client
 {
@@ -25,9 +26,9 @@ namespace Asteroids.Client
 
         //[BurstCompile]
         [ExcludeComponent(typeof(ParticleComponentData))]
-        struct ParticleSpawnJob : IJobProcessComponentDataWithEntity<ParticleEmitterComponentData, Translation, Rotation>
+        struct ParticleSpawnJob : IJobForEachWithEntity<ParticleEmitterComponentData, Translation, Rotation>
         {
-            public NativeQueue<int>.Concurrent spawnCountQueue;
+            public NativeQueue<int>.ParallelWriter spawnCountQueue;
             public EntityCommandBuffer.Concurrent commandBuffer;
             public float deltaTime;
             public EntityArchetype m_ColorSizeParticleArchetype;
@@ -91,7 +92,7 @@ namespace Asteroids.Client
         EntityArchetype m_SizeParticleArchetype;
         EntityArchetype m_ParticleArchetype;
 
-        protected override void OnCreateManager()
+        protected override void OnCreate()
         {
             m_ColorSizeParticleArchetype = EntityManager.CreateArchetype(typeof(ParticleEmitterComponentData),
                 typeof(ParticleComponentData),
@@ -113,13 +114,13 @@ namespace Asteroids.Client
                 typeof(ParticleAgeComponentData), typeof(ParticleVelocityComponentData),
                 typeof(Translation), typeof(Rotation));
 
-            barrier = World.GetOrCreateManager<BeginPresentationEntityCommandBufferSystem>();
+            barrier = World.GetOrCreateSystem<BeginPresentationEntityCommandBufferSystem>();
             spawnCountQueue = new NativeQueue<int>(Allocator.Persistent);
 
             EntityManager.CreateEntity(typeof(ParticleSpawnCountComponent));
         }
 
-        protected override void OnDestroyManager()
+        protected override void OnDestroy()
         {
             spawnCountQueue.Dispose();
         }
@@ -133,9 +134,9 @@ namespace Asteroids.Client
             SetSingleton(new ParticleSpawnCountComponent {spawnCount = spawnCount});
             var commandBuffer = barrier.CreateCommandBuffer().ToConcurrent();
             var spawnJob = new ParticleSpawnJob();
-            spawnJob.spawnCountQueue = spawnCountQueue.ToConcurrent();
+            spawnJob.spawnCountQueue = spawnCountQueue.AsParallelWriter();
             spawnJob.commandBuffer = commandBuffer;
-            spawnJob.deltaTime = Time.deltaTime;
+            spawnJob.deltaTime = Time.DeltaTime;
             spawnJob.m_ColorSizeParticleArchetype = m_ColorSizeParticleArchetype;
             spawnJob.m_ColorParticleArchetype = m_ColorParticleArchetype;
             spawnJob.m_SizeParticleArchetype = m_SizeParticleArchetype;
@@ -155,7 +156,7 @@ namespace Asteroids.Client
         private BeginPresentationEntityCommandBufferSystem barrier;
 
         [BurstCompile]
-        struct ParticleInitializeJob : IJobProcessComponentDataWithEntity<ParticleComponentData,
+        struct ParticleInitializeJob : IJobForEachWithEntity<ParticleComponentData,
             Translation, Rotation, ParticleVelocityComponentData, ParticleAgeComponentData,
             ParticleEmitterComponentData>
         {
@@ -194,20 +195,20 @@ namespace Asteroids.Client
             }
         }
 
-        protected override void OnCreateManager()
+        protected override void OnCreate()
         {
             randomData = new NativeArray<float>(10 * 1024, Allocator.Persistent);
             for (int i = 0; i < randomData.Length; ++i)
                 randomData[i] = Random.Range(0.0f, 1.0f);
             randomDataBase = 0;
 
-            barrier = World.GetOrCreateManager<BeginPresentationEntityCommandBufferSystem>();
+            barrier = World.GetOrCreateSystem<BeginPresentationEntityCommandBufferSystem>();
         }
 
         NativeArray<float> randomData;
         int randomDataBase;
 
-        protected override void OnDestroyManager()
+        protected override void OnDestroy()
         {
             randomData.Dispose();
         }

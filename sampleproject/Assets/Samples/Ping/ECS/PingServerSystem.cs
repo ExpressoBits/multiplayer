@@ -10,9 +10,9 @@ public class PingServerSystem : JobComponentSystem
     private PingDriverSystem m_ServerDriverSystem;
 
     [BurstCompile]
-    struct PongJob : IJobProcessComponentData<PingServerConnectionComponentData>
+    struct PongJob : IJobForEach<PingServerConnectionComponentData>
     {
-        public UdpNetworkDriver.Concurrent driver;
+        public NetworkDriver.Concurrent driver;
 
         public void Execute(ref PingServerConnectionComponentData connection)
         {
@@ -22,11 +22,10 @@ public class PingServerSystem : JobComponentSystem
             {
                 if (cmd == NetworkEvent.Type.Data)
                 {
-                    var readerCtx = default(DataStreamReader.Context);
-                    int id = strm.ReadInt(ref readerCtx);
-                    var pongData = new DataStreamWriter(4, Allocator.Temp);
-                    pongData.Write(id);
-                    driver.Send(NetworkPipeline.Null, connection.connection, pongData);
+                    int id = strm.ReadInt();
+                    var pongData = driver.BeginSend(connection.connection);
+                    pongData.WriteInt(id);
+                    driver.EndSend(pongData);
                 }
                 else if (cmd == NetworkEvent.Type.Disconnect)
                 {
@@ -36,13 +35,15 @@ public class PingServerSystem : JobComponentSystem
         }
     }
 
-    protected override void OnCreateManager()
+    protected override void OnCreate()
     {
-        m_ServerDriverSystem = World.GetOrCreateManager<PingDriverSystem>();
+        m_ServerDriverSystem = World.GetOrCreateSystem<PingDriverSystem>();
     }
 
     protected override JobHandle OnUpdate(JobHandle inputDep)
     {
+        if (!m_ServerDriverSystem.ServerDriver.IsCreated)
+            return inputDep;
         var pongJob = new PongJob
         {
             driver = m_ServerDriverSystem.ConcurrentServerDriver
